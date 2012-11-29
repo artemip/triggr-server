@@ -1,3 +1,4 @@
+import ast
 import threading
 import tornado.httpserver
 import tornado.websocket
@@ -5,14 +6,23 @@ import tornado.ioloop
 import tornado.web
 import redis
 
-DEVICE_SOCKETS = dict()
+DEVICE_SOCKETS = {}
 
 def redis_listener():
     r = redis.Redis(host='localhost', db=2)
     pubsub = r.pubsub()
     pubsub.subscribe('new_request')
     for request in pubsub.listen():
-        DEVICE_SOCKETS[request['device_id']].write_message(unicode(request['event']))
+        if request['data'] == 1L: continue
+
+        data = ast.literal_eval(request['data'])
+        try:
+            device_id = data['device_id'][0]
+            event = data['event'][0]
+
+            DEVICE_SOCKETS[device_id].write_message(event)
+        except KeyError, e:
+            print e
 
 class NewRequestHandler(tornado.web.RequestHandler):
     def get(self):
@@ -21,8 +31,7 @@ class NewRequestHandler(tornado.web.RequestHandler):
     def post(self):
         data = self.request.arguments
         r = redis.Redis(host='localhost', db=2)
-        pubsub = r.pubsub()
-        pubsub.publish('new_request', data)
+        r.publish('new_request', data)
 
 class NewDeviceHandler(tornado.websocket.WebSocketHandler):
     def open(self):
