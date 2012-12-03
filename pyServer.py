@@ -1,11 +1,16 @@
 import ast
-import threading
+from threading import Thread
+from socket import *
 import tornado.httpserver
-import tornado.websocket
-import tornado.ioloop
 import tornado.web
+import tornado.ioloop
 import redis
 
+OPTIONS = {
+    "socket_host" : "",
+    "socket_port": 9090,
+    "http_port" : 8000
+}
 DEVICE_SOCKETS = {}
 
 def redis_listener():
@@ -20,9 +25,30 @@ def redis_listener():
             device_id = data['device_id'][0]
             event = data['event'][0]
 
-            DEVICE_SOCKETS[device_id].write_message(event)
+            print device_id
+            print event
+
+            DEVICE_SOCKETS[device_id].send(event)
         except KeyError, e:
             print e
+
+def device_socket_registration(socket, addr):
+    device_id = socket.recv(256) #Blocking call, waits for at most 256 bytes. Might want to verify the ID as well
+    print "Registering " + device_id
+    DEVICE_SOCKETS[device_id] = socket
+    
+
+def socket_listener():
+    socket_addr = (OPTIONS["socket_host"], OPTIONS["socket_port"])
+    socket_server = socket( AF_INET, SOCK_STREAM )
+    
+    socket_server.bind( socket_addr )
+    socket_server.listen(5)
+
+    while 1:
+        socket_connection, socket_address = socket_server.accept()
+        print "Socket accepted"
+        Thread(target=device_socket_registration, args = (socket_connection, socket_address)).start()
 
 class NewRequestHandler(tornado.web.RequestHandler):
     def get(self):
@@ -33,29 +59,31 @@ class NewRequestHandler(tornado.web.RequestHandler):
         r = redis.Redis(host='localhost', db=2)
         r.publish('new_request', data)
 
-class NewDeviceHandler(tornado.websocket.WebSocketHandler):
-    def open(self):
-        pass #DEVICE_SOCKETS[""] = ""
+class NewDeviceHandler(tornado.web.RequestHandler):
+    def get(self):
+        self.write("OK")
 
-    def on_message(self, message):
-        if(message.startswith("device_id:")):
-            self.device_id = message[10:]
-            DEVICE_SOCKETS[self.device_id] = self
-    
-    def on_close(self):
-        pass
+    def post(self):
+        self.write("OK")
 
 settings = {
     'auto_reload': True,
 }
 
 application = tornado.web.Application([
-        (r'/', NewRequestHandler),
-        (r'/add_device', NewDeviceHandler),
+        (r'/events', NewRequestHandler),
+        (r'/register', NewDeviceHandler)
 ], **settings)
 
 if __name__ == "__main__":
-    threading.Thread(target=redis_listener).start()
-    http_server = tornado.httpserver.HTTPServer(application)
-    http_server.listen(8000)
-    tornado.ioloop.IOLoop.instance().start()
+    try:
+        Thread(target=redis_listener).start()
+        Thread(target=socket_listener).start()
+        http_server = tornado.httpserver.HTTPServer(application)
+        http_server.listen(OPTIONS["http_port"])
+        tornado.ioloop.IOLoop.instance().start()
+    except KeyboardInterrupt:
+         print '^C received. Shutting down...'
+         tornado.ioloop.IOLoop.instance().stop()
+         for device_id, socket in DEVICE_SOCKETS:
+             socket.close()
