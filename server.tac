@@ -20,6 +20,7 @@ class SocketListenerProtocol(basic.LineReceiver):
         log.msg("Received socket connection: %s" % self)
         self.device_id = None
 
+    #TODO: use format of <message_type>:<data> to generalize messages being sent from the client
     def lineReceived(self, device_id):
         self.device_id = device_id
         log.msg("Received request to register device with ID: {0}. Socket: {1}".format(self.device_id, self))
@@ -34,21 +35,18 @@ class EventResource(resource.Resource):
         resource.Resource.__init__(self)
         self.service = service
     
-    def render_GET(self, request):
-        return 'OK'
-
     def render_POST(self, request):
         #Event happened. Handle it
         event = request.args["event"][0]
         device_id = request.args["device_id"][0]
         log.msg("Received event {evt} meant for device {dev}. Forwarding...".format(evt=event, dev=device_id))
         self.service.sendEvent(device_id, event)
-        #TODO: Defer the above call
-        return 'OK'
+        #TODO: Defer the above call; May take a while
+        return 'OK' #TODO: return some relevant message
         
 class cBridgeService(service.Service):
     def __init__(self):
-        self.device_sockets = {} #Tuple(string, socket)
+        self.device_sockets = {} #dict(string, socket)
 
     def sendEvent(self, device_id, event):
         log.msg("Forwarding event {evt} to device {dev}".format(evt=event, dev=device_id))
@@ -56,14 +54,14 @@ class cBridgeService(service.Service):
         try:
             socket = self.device_sockets[device_id]
             if socket == None:
-                log.err("No device socket active for device_id: {0}".format(device_id))
+                log.err("Socket has disconnected for device_id: {0}".format(device_id))
                 return
             socket.transport.write(event)#+'\r\n')
         except KeyError:
             log.err()
 
     def registerDevice(self, device_id, device_socket):
-        log.msg("Registering device with device_id = {0}".format(device_id))
+        log.msg("Registering device with device_id: {0}".format(device_id))
         try:
             self.device_sockets[device_id] = device_socket
         except:
