@@ -15,6 +15,8 @@ OPTIONS = {
     "http_port" : 8000
 }
 
+redis = redis.Redis(host='localhost', db=2)
+
 class SocketListenerProtocol(basic.LineReceiver):
     def connectionMade(self):
         log.msg("Received socket connection: %s" % self)
@@ -34,8 +36,11 @@ class SocketListenerProtocol(basic.LineReceiver):
             self.device_id = message
             log.msg("Received request to register device with ID: {0}. Socket: {1}".format(self.device_id, self))
             self.factory.registerDevice(self.device_id, self)            
-        elif message_type == 'pairing_id':
-            pass
+        elif message_type == 'pairing_key':
+            redis_key = 'pairing_device:' + message
+            redis.set(redis_key, self.device_id)
+            redis.expire(redis_key, 86400) #1-day expiry
+            log.msg("Acknowledging pairing attempt for device {0}. Using pairing key {1}.".format(self.device_id, message))
 
     def connectionLost(self, reason):
         log.msg("Lost connection with {0}. Reason: {1}".format(self.device_id, reason))
@@ -54,6 +59,23 @@ class EventResource(resource.Resource):
         self.service.sendEvent(device_id, event)
         #TODO: Defer the above call; May take a while
         return 'OK' #TODO: return some relevant message
+
+class PairingResource(resource.Resource):
+    def __init__(self, service):
+        resource.Resource.__init__(self)
+        self.service = service
+    
+    def render_POST(self, request):
+        device_id = request.args["device_id"][0]
+        pairing_key = request.args["pairing_key"][0]
+        pairing_device_id = redis.get('pairing_device:' + pairing_key)
+
+        if pairing_device_id == None:
+            return "Invalid ID"
+        else:
+            sendEvent(pairing_device_id, 'pairing_successful')
+            return pairing_device_id
+        
         
 class cBridgeService(service.Service):
     def __init__(self):
@@ -81,6 +103,7 @@ class cBridgeService(service.Service):
     def getResource(self):
         root = Resource()
         root.putChild("events", EventResource(self))
+        root.putChild("pair", PairingResource(self))
         return root
 
     def getSocketListenerFactory(self):
