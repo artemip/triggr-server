@@ -21,10 +21,21 @@ class SocketListenerProtocol(basic.LineReceiver):
         self.device_id = None
 
     #TODO: use format of <message_type>:<data> to generalize messages being sent from the client
-    def lineReceived(self, device_id):
-        self.device_id = device_id
-        log.msg("Received request to register device with ID: {0}. Socket: {1}".format(self.device_id, self))
-        self.factory.registerDevice(self.device_id, self)
+    def lineReceived(self, line):
+        split_line = line.split(':')
+        
+        if len(split_line) != 2:
+            log.msg("Received invalid message {0} from socket {1}".format(line, self))
+
+        message_type = split_line[0]
+        message = split_line[1]
+
+        if message_type == 'device_id':
+            self.device_id = message
+            log.msg("Received request to register device with ID: {0}. Socket: {1}".format(self.device_id, self))
+            self.factory.registerDevice(self.device_id, self)            
+        elif message_type == 'pairing_id':
+            pass
 
     def connectionLost(self, reason):
         log.msg("Lost connection with {0}. Reason: {1}".format(self.device_id, reason))
@@ -56,7 +67,7 @@ class cBridgeService(service.Service):
             if socket == None:
                 log.err("Socket has disconnected for device_id: {0}".format(device_id))
                 return
-            socket.transport.write(event)#+'\r\n')
+            socket.transport.write(event + '\r\n')
         except KeyError:
             log.err()
 
@@ -69,7 +80,7 @@ class cBridgeService(service.Service):
 
     def getResource(self):
         root = Resource()
-        root.putChild("event", EventResource(self))
+        root.putChild("events", EventResource(self))
         return root
 
     def getSocketListenerFactory(self):
