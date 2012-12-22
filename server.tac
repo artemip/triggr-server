@@ -15,19 +15,19 @@ OPTIONS = {
     "http_port" : 8000
 }
 
-redis = redis.Redis(host='localhost', db=2)
+redis = redis.Redis(host='', db=2)
 
 class SocketListenerProtocol(basic.LineReceiver):
     def connectionMade(self):
         log.msg("Received socket connection: %s" % self)
         self.device_id = None
 
-    #TODO: use format of <message_type>:<data> to generalize messages being sent from the client
     def lineReceived(self, line):
+        log.msg("Received message {0} from socket {1}".format(line, self))
         split_line = line.split(':')
         
         if len(split_line) != 2:
-            log.msg("Received invalid message {0} from socket {1}".format(line, self))
+            log.msg("Invalid message {0} from socket {1}".format(line, self))
 
         message_type = split_line[0]
         message = split_line[1]
@@ -41,6 +41,14 @@ class SocketListenerProtocol(basic.LineReceiver):
             redis.set(redis_key, self.device_id)
             redis.expire(redis_key, 86400) #1-day expiry
             log.msg("Acknowledging pairing attempt for device {0}. Using pairing key {1}.".format(self.device_id, message))
+        elif message_type == 'heartbeat_check':
+            log.msg('Received heartbeat-check message')
+            redis_key = "device_heartbeat:" + message
+            redis.get(redis_key)
+
+            if redis_key is not None:
+                self.factory.sendEvent(self.device_id, 'paired_device_heartbeat')
+                
 
     def connectionLost(self, reason):
         log.msg("Lost connection with {0}. Reason: {1}".format(self.device_id, reason))
@@ -68,18 +76,43 @@ class PairingResource(resource.Resource):
     def render_POST(self, request):
         device_id = request.args["device_id"][0]
         pairing_key = request.args["pairing_key"][0]
-        pairing_device_id = redis.get('pairing_device:' + pairing_key)
+        redis_key = 'pairing_device:' + pairing_key
+        pairing_device_id = redis.get(redis_key)
 
-        if pairing_device_id == None:
-            return "Invalid ID"
+        if pairing_device_id is None:
+            log.msg('No pairing device found for key ' + pairing_key)
+            return None
         else:
-            sendEvent(pairing_device_id, 'pairing_successful')
+            log.msg('Completing pairing. Sending acknowledgement messages.')
+            redis.delete(redis_key)
+            self.service.sendEvent(pairing_device_id, 'pairing_successful:' + device_id)
             return pairing_device_id
         
+class HeartbeatResource(resource.Resource):
+    def __init__(self, service):
+        resource.Resource.__init__(self)
+        self.service = service
+    
+    def render_POST(self, request):
+        device_id = request.args["device_id"][0]
+        paired_device_id = request.args["paired_device_id"][0]
         
+        if paired_device_id != "" and paired_device_id in self.service.getListeningDevices(): #Device is listening; send it a message via socket
+            self.service.sendEvent(paired_device_id, 'paired_device_heartbeat')
+            return "OK"
+
+        #Device is not connected. Leave a message in Redis to let it know of the heartbeat
+        redis_key = 'device_heartbeat:' + device_id
+        redis.set(redis_key, "")
+        redis.expire(redis_key, 360) #1-hour expiry
+        return "OK"
+
 class cBridgeService(service.Service):
     def __init__(self):
         self.device_sockets = {} #dict(string, socket)
+
+    def getListeningDevices(self):
+        return self.device_sockets.keys
 
     def sendEvent(self, device_id, event):
         log.msg("Forwarding event {evt} to device {dev}".format(evt=event, dev=device_id))
@@ -104,12 +137,15 @@ class cBridgeService(service.Service):
         root = Resource()
         root.putChild("events", EventResource(self))
         root.putChild("pair", PairingResource(self))
+        root.putChild("heartbeat", HeartbeatResource(self))
         return root
 
     def getSocketListenerFactory(self):
         f = protocol.ServerFactory()
         f.protocol = SocketListenerProtocol
         f.registerDevice = self.registerDevice
+        f.sendEvent = self.sendEvent
+        f.getListeningDevices = self.getListeningDevices
         return f
 
 application = service.Application('cbridge')
