@@ -28,6 +28,7 @@ class SocketListenerProtocol(basic.LineReceiver):
         
         if len(split_line) != 2:
             log.msg("Invalid message {0} from socket {1}".format(line, self))
+            return
 
         message_type = split_line[0]
         message = split_line[1]
