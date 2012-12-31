@@ -45,15 +45,16 @@ class SocketListenerProtocol(basic.LineReceiver):
         elif message_type == 'heartbeat_check':
             log.msg('Received heartbeat-check message')
             redis_key = "device_heartbeat:" + message
-            redis.get(redis_key)
+            heartbeat = redis.get(redis_key)
 
-            if redis_key is not None:
+            if heartbeat is not None:
+                log.msg("Found heartbeat for device " + message + ". Forwarding...")
                 self.factory.sendEvent(self.device_id, 'paired_device_heartbeat')
                 
 
     def connectionLost(self, reason):
         log.msg("Lost connection with {0}. Reason: {1}".format(self.device_id, reason))
-        self.factory.registerDevice(self.device_id, None)
+        self.factory.unregisterDevice(self.device_id)
 
 class EventResource(resource.Resource):
     def __init__(self, service):
@@ -97,15 +98,19 @@ class HeartbeatResource(resource.Resource):
     def render_POST(self, request):
         device_id = request.args["device_id"][0]
         paired_device_id = request.args["paired_device_id"][0]
+        log.msg("Received heartbeat message from " + device_id + " intended for recipient " + paired_device_id)
         
-        if paired_device_id != "" and paired_device_id in self.service.getListeningDevices(): #Device is listening; send it a message via socket
+        listening_devices = self.service.getListeningDevices()
+        if paired_device_id != "" and paired_device_id in listening_devices.keys() and listening_devices[paired_device_id] != None: #Device is listening; send it a message via socket
+            log.msg("Device is connected. Forwarding heartbeat to " + paired_device_id)
             self.service.sendEvent(paired_device_id, 'paired_device_heartbeat')
             return "OK"
 
         #Device is not connected. Leave a message in Redis to let it know of the heartbeat
+        log.msg("Device is not connected. Storing heartbeat message of " + paired_device_id + " intended for " + paired_device_id)
         redis_key = 'device_heartbeat:' + device_id
         redis.set(redis_key, "")
-        redis.expire(redis_key, 360) #1-hour expiry
+        redis.expire(redis_key, 240) #4-minute expiry
         return "OK"
 
 class cBridgeService(service.Service):
@@ -113,7 +118,7 @@ class cBridgeService(service.Service):
         self.device_sockets = {} #dict(string, socket)
 
     def getListeningDevices(self):
-        return self.device_sockets.keys
+        return self.device_sockets
 
     def sendEvent(self, device_id, event):
         log.msg("Forwarding event {evt} to device {dev}".format(evt=event, dev=device_id))
@@ -126,6 +131,13 @@ class cBridgeService(service.Service):
             socket.transport.write(event + '\r\n')
         except KeyError:
             log.err()
+
+    def unregisterDevice(self, device_id):
+        if device_id in self.device_sockets.keys():
+            log.msg("Unregistering device {0}".format(device_id))
+            del(self.device_sockets[device_id])
+        else:
+            log.msg("Unregistration for device {0} failed. Device has not been registered".format(device_id))
 
     def registerDevice(self, device_id, device_socket):
         log.msg("Registering device with device_id: {0}".format(device_id))
@@ -145,6 +157,7 @@ class cBridgeService(service.Service):
         f = protocol.ServerFactory()
         f.protocol = SocketListenerProtocol
         f.registerDevice = self.registerDevice
+        f.unregisterDevice = self.unregisterDevice
         f.sendEvent = self.sendEvent
         f.getListeningDevices = self.getListeningDevices
         return f

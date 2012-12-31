@@ -1,0 +1,4 @@
+#!/bin/sh
+PID=$(cat twistd.pid)
+
+kill -INT ${PID}

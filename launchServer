@@ -1,0 +1,2 @@
+#!/bin/sh
+twistd -y server.tac --logfile 'cbridge-log.log'
