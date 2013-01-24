@@ -113,7 +113,7 @@ class HeartbeatResource(resource.Resource):
         redis.expire(redis_key, 240) #4-minute expiry
         return "OK"
 
-class cBridgeService(service.Service):
+class TriggrService(service.Service):
     def __init__(self):
         self.device_sockets = {} #dict(string, socket)
 
@@ -162,9 +162,9 @@ class cBridgeService(service.Service):
         f.getListeningDevices = self.getListeningDevices
         return f
 
-application = service.Application('cbridge')
-cbridge_service = cBridgeService()
+application = service.Application('triggr')
+triggr_service = TriggrService()
 serviceCollection = service.IServiceCollection(application)
-cbridge_service.setServiceParent(serviceCollection)
-internet.TCPServer(OPTIONS['socket_port'], cbridge_service.getSocketListenerFactory()).setServiceParent(serviceCollection)
-internet.TCPServer(OPTIONS['http_port'], server.Site(cbridge_service.getResource())).setServiceParent(serviceCollection)
+triggr_service.setServiceParent(serviceCollection)
+internet.TCPServer(OPTIONS['socket_port'], triggr_service.getSocketListenerFactory()).setServiceParent(serviceCollection)
+internet.TCPServer(OPTIONS['http_port'], server.Site(triggr_service.getResource())).setServiceParent(serviceCollection)
