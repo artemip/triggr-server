@@ -49,8 +49,10 @@ class SocketListenerProtocol(basic.LineReceiver):
 
             if heartbeat is not None:
                 log.msg("Found heartbeat for device " + message + ". Forwarding...")
+                redis.delete(redis_key)
                 self.factory.sendEvent(self.device_id, 'paired_device_heartbeat')
-                
+            else:
+                log.msg("No heartbeat found for " + message + ".")
 
     def connectionLost(self, reason):
         log.msg("Lost connection with {0}. Reason: {1}".format(self.device_id, reason))
@@ -107,10 +109,29 @@ class HeartbeatResource(resource.Resource):
             return "OK"
 
         #Device is not connected. Leave a message in Redis to let it know of the heartbeat
-        log.msg("Device is not connected. Storing heartbeat message of " + paired_device_id + " intended for " + paired_device_id)
+        log.msg("Device is not connected. Storing heartbeat message of " + device_id + " intended for " + paired_device_id)
         redis_key = 'device_heartbeat:' + device_id
-        redis.set(redis_key, "")
+        redis.set(redis_key, paired_device_id)
         redis.expire(redis_key, 240) #4-minute expiry
+        return "OK"
+
+class DisconnectResource(resource.Resource):
+    def __init__(self, service):
+        resource.Resource.__init__(self)
+        self.service = service
+    
+    def render_POST(self, request):
+        device_id = request.args["device_id"][0]
+        paired_device_id = request.args["paired_device_id"][0]
+        log.msg("Received disconnect  message from " + device_id + " intended for recipient " + paired_device_id)
+        
+        redis.delete('device_heartbeat:' + device_id)
+
+        listening_devices = self.service.getListeningDevices()
+        if paired_device_id != "" and paired_device_id in listening_devices.keys() and listening_devices[paired_device_id] != None: #Device is listening; send it a message via socket
+            log.msg("Device is connected. Forwarding disconnect request to " + paired_device_id)
+            self.service.sendEvent(paired_device_id, 'paired_device_disconnected')
+        
         return "OK"
 
 class TriggrService(service.Service):
@@ -151,6 +172,7 @@ class TriggrService(service.Service):
         root.putChild("events", EventResource(self))
         root.putChild("pair", PairingResource(self))
         root.putChild("heartbeat", HeartbeatResource(self))
+        root.putChild("disconnect", DisconnectResource(self))
         return root
 
     def getSocketListenerFactory(self):

@@ -1,2 +1,2 @@
 #!/bin/sh
-twistd -y server.tac --logfile 'cbridge-log.log'
+twistd -y server.tac --logfile 'triggr.log'
