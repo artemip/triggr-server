@@ -23,7 +23,6 @@ class SocketListenerProtocol(basic.LineReceiver):
         self.device_id = None
 
     def lineReceived(self, line):
-        log.msg("Received message {0} from socket {1}".format(line, self))
         split_line = line.split(':')
         
         if len(split_line) != 2:
@@ -43,16 +42,14 @@ class SocketListenerProtocol(basic.LineReceiver):
             redis.expire(redis_key, 86400) #1-day expiry
             log.msg("Acknowledging pairing attempt for device {0}. Using pairing key {1}.".format(self.device_id, message))
         elif message_type == 'heartbeat_check':
-            log.msg('Received heartbeat-check message')
             redis_key = "device_heartbeat:" + message
             heartbeat = redis.get(redis_key)
 
             if heartbeat is not None:
-                log.msg("Found heartbeat for device " + message + ". Forwarding...")
                 redis.delete(redis_key)
                 self.factory.sendEvent(self.device_id, 'paired_device_heartbeat')
-            else:
-                log.msg("No heartbeat found for " + message + ".")
+	else:
+	    log.msg("Received unknown message {0} from socket {1}".format(line, self))
 
     def connectionLost(self, reason):
         log.msg("Lost connection with {0}. Reason: {1}".format(self.device_id, reason))
@@ -67,7 +64,7 @@ class EventResource(resource.Resource):
         #Event happened. Handle it
         event = request.args["event"][0]
         device_id = request.args["device_id"][0]
-        log.msg("Received event {evt} meant for device {dev}. Forwarding...".format(evt=event, dev=device_id))
+
         self.service.sendEvent(device_id, event)
         #TODO: Defer the above call; May take a while
         return 'OK' #TODO: return some relevant message
@@ -100,16 +97,13 @@ class HeartbeatResource(resource.Resource):
     def render_POST(self, request):
         device_id = request.args["device_id"][0]
         paired_device_id = request.args["paired_device_id"][0]
-        log.msg("Received heartbeat message from " + device_id + " intended for recipient " + paired_device_id)
         
         listening_devices = self.service.getListeningDevices()
         if paired_device_id != "" and paired_device_id in listening_devices.keys() and listening_devices[paired_device_id] != None: #Device is listening; send it a message via socket
-            log.msg("Device is connected. Forwarding heartbeat to " + paired_device_id)
             self.service.sendEvent(paired_device_id, 'paired_device_heartbeat')
             return "OK"
 
         #Device is not connected. Leave a message in Redis to let it know of the heartbeat
-        log.msg("Device is not connected. Storing heartbeat message of " + device_id + " intended for " + paired_device_id)
         redis_key = 'device_heartbeat:' + device_id
         redis.set(redis_key, paired_device_id)
         redis.expire(redis_key, 240) #4-minute expiry
@@ -143,7 +137,13 @@ class TriggrService(service.Service):
 
     def sendEvent(self, device_id, event):
         log.msg("Forwarding event {evt} to device {dev}".format(evt=event, dev=device_id))
+
+	event_type = event.split(':', 1)[0]
         
+	#Metrics
+	redis.incr("total_events")
+	redis.incr("total_events_{0}".format(event_type))
+
         try:
             socket = self.device_sockets[device_id]
             if socket == None:
@@ -151,11 +151,12 @@ class TriggrService(service.Service):
                 return
             socket.transport.write(event + '\r\n')
         except KeyError:
-            log.err()
+            log.err("Socket has disconnected for device_id: {0}".format(device_id))
 
     def unregisterDevice(self, device_id):
         if device_id in self.device_sockets.keys():
             log.msg("Unregistering device {0}".format(device_id))
+	    log.msg("Unregistered device. Number of connected devices: {0}".format(len(self.device_sockets)))
             del(self.device_sockets[device_id])
         else:
             log.msg("Unregistration for device {0} failed. Device has not been registered".format(device_id))
@@ -164,6 +165,7 @@ class TriggrService(service.Service):
         log.msg("Registering device with device_id: {0}".format(device_id))
         try:
             self.device_sockets[device_id] = device_socket
+	    log.msg("New device registered. Number of connected devices: {0}".format(len(self.device_sockets)))
         except:
             log.err()
 
