@@ -156,8 +156,8 @@ class TriggrService(service.Service):
     def unregisterDevice(self, device_id):
         if device_id in self.device_sockets.keys():
             log.msg("Unregistering device {0}".format(device_id))
-	    log.msg("Unregistered device. Number of connected devices: {0}".format(len(self.device_sockets)))
             del(self.device_sockets[device_id])
+	    log.msg("Unregistered device. Number of connected devices: {0}".format(len(self.device_sockets)))
         else:
             log.msg("Unregistration for device {0} failed. Device has not been registered".format(device_id))
 
