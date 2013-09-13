@@ -1,3 +1,2 @@
 #!/bin/sh
-./killServer
-./launchServer
+./killServer && ./launchServer

@@ -164,8 +164,11 @@ class TriggrService(service.Service):
     def registerDevice(self, device_id, device_socket):
         log.msg("Registering device with device_id: {0}".format(device_id))
         try:
-            self.device_sockets[device_id] = device_socket
-	    log.msg("New device registered. Number of connected devices: {0}".format(len(self.device_sockets)))
+            if self.device_sockets[device_id] == None:
+                self.device_sockets[device_id] = device_socket
+                log.msg("New device registered. Number of connected devices: {0}".format(len(self.device_sockets)))
+            else:
+                log.msg("Existing device attempted to register again. Device ID: {0}".format(device_id))
         except:
             log.err()
 
