@@ -1,0 +1,9 @@
+#!/bin/sh
+
+TRIGGR_DIR=/local/triggr-server/
+SERVERFILE=${TRIGGR_DIR}server.tac
+PIDFILE=${TRIGGR_DIR}triggr.pid
+LOGFILE=${TRIGGR_DIR}triggr.log
+
+echo "Starting Triggr ..."
+twistd -y ${SERVERFILE} --logfile ${LOGFILE} --pidfile ${PIDFILE}

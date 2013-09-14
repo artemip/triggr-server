@@ -1,5 +1,0 @@
-#!/bin/sh
-
-TRIGGR_DIR=/local/triggr-server/
-
-twistd -y ${TRIGGR_DIR}server.tac --logfile ${TRIGGR_DIR}triggr.log --pidfile ${TRIGGR_DIR}triggr.pid

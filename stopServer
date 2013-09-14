@@ -11,3 +11,14 @@ do
     sleep 1                                  
 done                                         
 echo "Triggr stopped"                        
+
+case "$1" in
+    --remove-logs)
+	echo "Removing log files"
+	rm -f *.log*
+	exit 0
+	;;
+    *)
+	break
+	;;
+esac
