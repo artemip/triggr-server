@@ -1,4 +1,13 @@
 #!/bin/sh
-PID=$(cat twistd.pid)
+PIDFILE=/local/triggr-server/triggr.pid
+
+PID=$(cat ${PIDFILE})
 
 kill -INT ${PID}
+
+while [ -x /proc/${PID} ]                    
+do                                           
+    echo "Waiting for Triggr to shutdown ..."
+    sleep 1                                  
+done                                         
+echo "Triggr stopped"                        

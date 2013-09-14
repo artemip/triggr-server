@@ -28,3 +28,6 @@ pip-log.txt
 
 #Logfiles
 *.log
+
+#Twisted
+*.pid
