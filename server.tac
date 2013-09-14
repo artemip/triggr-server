@@ -1,4 +1,8 @@
 from twisted.application import internet, service
+
+from twisted.internet import epollreactor
+epollreactor.install() #EPoll scales much better than the default reactor implementation on Linux
+
 from twisted.internet import protocol, reactor, defer
 from twisted.protocols import basic
 from twisted.web import resource, server, static
@@ -18,6 +22,9 @@ OPTIONS = {
 redis = redis.Redis(host='', db=2)
 
 class SocketListenerProtocol(basic.LineReceiver):
+    def __init__(self):
+        self.device_id = None
+    
     def connectionMade(self):
         log.msg("Received socket connection: %s" % self)
         self.device_id = None
@@ -144,19 +151,24 @@ class TriggrService(service.Service):
 	redis.incr("total_events")
 	redis.incr("total_events_{0}".format(event_type))
 
-        try:
+        if device_id in self.device_sockets:
             socket = self.device_sockets[device_id]
             if socket == None:
                 log.err("Socket has disconnected for device_id: {0}".format(device_id))
                 return
             socket.transport.write(event + '\r\n')
-        except KeyError:
+        else:
             log.err("Socket has disconnected for device_id: {0}".format(device_id))
 
     def unregisterDevice(self, device_id):
         if device_id in self.device_sockets.keys():
             log.msg("Unregistering device {0}".format(device_id))
-            del(self.device_sockets[device_id])
+            
+            socket = self.device_sockets[device_id]
+
+#            socket.transport.loseConnection()
+            del(socket)
+
 	    log.msg("Unregistered device. Number of connected devices: {0}".format(len(self.device_sockets)))
         else:
             log.msg("Unregistration for device {0} failed. Device has not been registered".format(device_id))
@@ -164,11 +176,11 @@ class TriggrService(service.Service):
     def registerDevice(self, device_id, device_socket):
         log.msg("Registering device with device_id: {0}".format(device_id))
         try:
-            if self.device_sockets[device_id] == None:
+#            if device_id in self.device_sockets:
                 self.device_sockets[device_id] = device_socket
                 log.msg("New device registered. Number of connected devices: {0}".format(len(self.device_sockets)))
-            else:
-                log.msg("Existing device attempted to register again. Device ID: {0}".format(device_id))
+ #           else:
+  #              log.msg("Existing device attempted to register again. Device ID: {0}".format(device_id))
         except:
             log.err()
 
