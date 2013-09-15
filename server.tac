@@ -161,13 +161,11 @@ class TriggrService(service.Service):
             log.err("Socket has disconnected for device_id: {0}".format(device_id))
 
     def unregisterDevice(self, device_id):
-        if device_id in self.device_sockets.keys():
-            log.msg("Unregistering device {0}".format(device_id))
-            
+        if device_id in self.device_sockets:
             socket = self.device_sockets[device_id]
-
-#            socket.transport.loseConnection()
-            del(socket)
+            log.msg("Unregistering device {0}".format(device_id))            
+            
+            del(self.device_sockets[device_id])
 
 	    log.msg("Unregistered device. Number of connected devices: {0}".format(len(self.device_sockets)))
         else:
