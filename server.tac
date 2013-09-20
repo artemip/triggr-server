@@ -26,7 +26,7 @@ class SocketListenerProtocol(basic.LineReceiver):
         self.device_id = None
         self.timeout_task = None
         self.socket_timeout = 3600 #1 hour
-        self.sent_message = False
+        self.sent_message = True
 
     def timeout_connection(self):
         if self.sent_message == False:
