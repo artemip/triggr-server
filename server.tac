@@ -3,7 +3,7 @@ from twisted.application import internet, service
 from twisted.internet import epollreactor
 epollreactor.install() #EPoll scales much better than the default reactor implementation on Linux
 
-from twisted.internet import protocol, reactor, defer
+from twisted.internet import protocol, reactor, defer, task
 from twisted.protocols import basic
 from twisted.web import resource, server, static
 from twisted.web.resource import Resource
@@ -24,9 +24,21 @@ redis = redis.Redis(host='', db=2)
 class SocketListenerProtocol(basic.LineReceiver):
     def __init__(self):
         self.device_id = None
-    
+        self.timeout_task = None
+        self.socket_timeout = 3600 #1 hour
+        self.sent_message = False
+
+    def timeout_connection(self):
+        if self.sent_message == False:
+            log.msg("Timing out old connection: {0}; Reason: {1}s timeout passed".format(self.device_id, self.socket_timeout))
+            self.transport.abortConnection()
+        else:
+            self.sent_message = False
+
     def connectionMade(self):
         log.msg("Received socket connection: %s" % self)
+        self.timeout_task = task.LoopingCall(self.timeout_connection)
+        self.timeout_task.start(self.socket_timeout)
         self.device_id = None
 
     def lineReceived(self, line):
@@ -61,6 +73,7 @@ class SocketListenerProtocol(basic.LineReceiver):
     def connectionLost(self, reason):
         log.msg("Lost connection with {0}. Reason: {1}".format(self.device_id, reason))
         self.factory.unregisterDevice(self.device_id)
+        self.timeout_task.stop()
 
 class EventResource(resource.Resource):
     def __init__(self, service):
@@ -157,6 +170,7 @@ class TriggrService(service.Service):
                 log.err("Socket has disconnected for device_id: {0}".format(device_id))
                 return
             socket.transport.write(event + '\r\n')
+            socket.sent_message = True
         else:
             log.err("Socket has disconnected for device_id: {0}".format(device_id))
 
