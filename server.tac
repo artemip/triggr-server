@@ -9,8 +9,10 @@ from twisted.web import resource, server, static
 from twisted.web.resource import Resource
 from twisted.python import log
 
+from time import gmtime, strftime
 import cgi
 import ast
+import json
 import redis
 
 OPTIONS = {
@@ -20,12 +22,26 @@ OPTIONS = {
 }
 
 redis = redis.Redis(host='', db=2)
+redis_metrics = redis.Redis(host='', db=3)
 
+# OK message (no errors, no significant messages)
+def okMessageJSON():
+    return "{'status':'ok'}"
+
+# Message to return then connected to new device
+def connectedMessageJSON(paired_device_id):
+    return "{'status':'ok', 'paired_device_id':'{0}'}".format(paired_device_id)
+
+# Error occured; Send the message (reason) back to the client
+def errorMessageJSON(message):
+    return "{'status':'error', 'message':'{0}'}".format(message)
+
+# Listen to and communicate with incoming socket connections
 class SocketListenerProtocol(basic.LineReceiver):
     def __init__(self):
         self.device_id = None
         self.timeout_task = None
-        self.socket_timeout = 3600 #1 hour
+        self.socket_timeout = 86400 #24 hours
         self.sent_message = True
 
     def timeout_connection(self):
@@ -34,44 +50,43 @@ class SocketListenerProtocol(basic.LineReceiver):
             self.transport.abortConnection()
         else:
             self.sent_message = False
-
+            
+    # Log new connection being made
     def connectionMade(self):
         log.msg("Received socket connection: %s" % self)
         self.timeout_task = task.LoopingCall(self.timeout_connection)
         self.timeout_task.start(self.socket_timeout)
         self.device_id = None
 
+    # Receive a message from the socket
     def lineReceived(self, line):
-        split_line = line.split(':')
-        
-        if len(split_line) != 2:
+        parsed_json = json.loads(line)
+
+        try:
+            # Get message type and message data
+            message_type = parsed_json["message_type"]
+            message = parsed_json["message"]
+
+            # New device registration; Save the socket connection
+            if message_type == 'register_device':
+                self.device_id = message
+                self.factory.registerDevice(self.device_id, self)
+            # Register and save a new pairing key to connect devices
+            elif message_type == 'register_pairing_key':
+                redis_key = 'pairing_device:' + message
+                redis.set(redis_key, self.device_id)
+                redis.expire(redis_key, 86400) #1-day expiry
+                log.msg("Registering pairing key {0} from device {1}.".format(message, self.device_id))
+            else:
+                raise Exception
+        except:
+            # Broken or malicious client. Close the connection
             log.msg("Invalid message {0} from socket {1}".format(line, self))
-            return
+            self.transport.abortConnection()
 
-        message_type = split_line[0]
-        message = split_line[1]
-
-        if message_type == 'device_id':
-            self.device_id = message
-            log.msg("Received request to register device with ID: {0}. Socket: {1}".format(self.device_id, self))
-            self.factory.registerDevice(self.device_id, self)            
-        elif message_type == 'pairing_key':
-            redis_key = 'pairing_device:' + message
-            redis.set(redis_key, self.device_id)
-            redis.expire(redis_key, 86400) #1-day expiry
-            log.msg("Acknowledging pairing attempt for device {0}. Using pairing key {1}.".format(self.device_id, message))
-        elif message_type == 'heartbeat_check':
-            redis_key = "device_heartbeat:" + message
-            heartbeat = redis.get(redis_key)
-
-            if heartbeat is not None:
-                redis.delete(redis_key)
-                self.factory.sendEvent(self.device_id, 'paired_device_heartbeat')
-	else:
-	    log.msg("Received unknown message {0} from socket {1}".format(line, self))
-
+    # When the connection is lost, unregister the device and forget the socket
     def connectionLost(self, reason):
-        log.msg("Lost connection with {0}. Reason: {1}".format(self.device_id, reason))
+        log.msg("Lost connection with device {0}. Reason: {1}".format(self.device_id, reason))
         self.factory.unregisterDevice(self.device_id)
         self.timeout_task.stop()
 
@@ -81,15 +96,16 @@ class EventResource(resource.Resource):
         self.service = service
     
     def render_POST(self, request):
-        #Event happened. Handle it
+        # Handle incoming event
         event = request.args["event"][0]
         device_id = request.args["device_id"][0]
 
-        self.service.sendEvent(device_id, event)
-        #TODO: Defer the above call; May take a while
-        return 'OK' #TODO: return some relevant message
+        if self.service.sendEvent(device_id, event):
+            return connectedMessageJSON(device_id)
+        else:
+            return errorMessageJSON("Lost computer connection")
 
-class PairingResource(resource.Resource):
+class ConnectResource(resource.Resource):
     def __init__(self, service):
         resource.Resource.__init__(self)
         self.service = service
@@ -97,37 +113,21 @@ class PairingResource(resource.Resource):
     def render_POST(self, request):
         device_id = request.args["device_id"][0]
         pairing_key = request.args["pairing_key"][0]
+        event = request.args["event"][0]
+        
         redis_key = 'pairing_device:' + pairing_key
         pairing_device_id = redis.get(redis_key)
 
         if pairing_device_id is None:
-            log.msg('No pairing device found for key ' + pairing_key)
-            return None
+            log.msg('No matching device found for pairing key: ' + pairing_key)
+            return errorMessageJSON("Invalid pairing key")
+            
+        log.msg('Connected devices {0} and {1} using key {2}.'.format(device_id, pairing_device_id, pairing_key))
+        redis.delete(redis_key)
+        if self.service.sendEvent(pairing_device_id, event):
+            return connectedMessageJSON(pairing_device_id)
         else:
-            log.msg('Completing pairing. Sending acknowledgement messages.')
-            redis.delete(redis_key)
-            self.service.sendEvent(pairing_device_id, 'pairing_successful:' + device_id)
-            return pairing_device_id
-        
-class HeartbeatResource(resource.Resource):
-    def __init__(self, service):
-        resource.Resource.__init__(self)
-        self.service = service
-    
-    def render_POST(self, request):
-        device_id = request.args["device_id"][0]
-        paired_device_id = request.args["paired_device_id"][0]
-        
-        listening_devices = self.service.getListeningDevices()
-        if paired_device_id != "" and paired_device_id in listening_devices.keys() and listening_devices[paired_device_id] != None: #Device is listening; send it a message via socket
-            self.service.sendEvent(paired_device_id, 'paired_device_heartbeat')
-            return "OK"
-
-        #Device is not connected. Leave a message in Redis to let it know of the heartbeat
-        redis_key = 'device_heartbeat:' + device_id
-        redis.set(redis_key, paired_device_id)
-        redis.expire(redis_key, 240) #4-minute expiry
-        return "OK"
+            return errorMessageJSON("Lost computer connection")
 
 class DisconnectResource(resource.Resource):
     def __init__(self, service):
@@ -137,16 +137,18 @@ class DisconnectResource(resource.Resource):
     def render_POST(self, request):
         device_id = request.args["device_id"][0]
         paired_device_id = request.args["paired_device_id"][0]
-        log.msg("Received disconnect  message from " + device_id + " intended for recipient " + paired_device_id)
-        
-        redis.delete('device_heartbeat:' + device_id)
+        event = request.args["event"][0]
+
+        log.msg("Received disconnect message from " + device_id + " intended for recipient " + paired_device_id)
 
         listening_devices = self.service.getListeningDevices()
-        if paired_device_id != "" and paired_device_id in listening_devices.keys() and listening_devices[paired_device_id] != None: #Device is listening; send it a message via socket
+        if paired_device_id != "" and paired_device_id in listening_devices.keys() and listening_devices[paired_device_id] != None:
             log.msg("Device is connected. Forwarding disconnect request to " + paired_device_id)
-            self.service.sendEvent(paired_device_id, 'paired_device_disconnected')
-        
-        return "OK"
+            
+            if self.service.sendEvent(paired_device_id, event):
+                return okMessageJSON()
+
+        return errorMessageJSON("Lost computer connection")
 
 class TriggrService(service.Service):
     def __init__(self):
@@ -156,51 +158,62 @@ class TriggrService(service.Service):
         return self.device_sockets
 
     def sendEvent(self, device_id, event):
-        log.msg("Forwarding event {evt} to device {dev}".format(evt=event, dev=device_id))
-
-	event_type = event.split(':', 1)[0]
+        event = json.load(event)
+        event_type = event["type"]
         
-	#Metrics
-	redis.incr("total_events")
-	redis.incr("total_events_{0}".format(event_type))
+        log.msg("Forwarding event {evt} to device {dev}".format(evt=event, dev=device_id))
+        
+        #Metrics gathering
+        date_stamp = strftime("%Y-%m-%d-%H:00:00", gmtime())
+    
+        redis_metrics.incr("events_total")
+        redis_metrics.incr("{0}".format(event_type))
+        redis_metrics.incr("{0}:{1}".format(event_type, date_stamp))
 
-        if device_id in self.device_sockets:
+        try:
             socket = self.device_sockets[device_id]
-            if socket == None:
-                log.err("Socket has disconnected for device_id: {0}".format(device_id))
-                return
             socket.transport.write(event + '\r\n')
             socket.sent_message = True
-        else:
-            log.err("Socket has disconnected for device_id: {0}".format(device_id))
+            return True
+        except:
+            log.err()
+            return False
+
+    def registerDevice(self, device_id, device_socket):
+        try:
+            #Metrics gathering
+            date_stamp = strftime("%Y-%m-%d-%H:00:00", gmtime())
+        
+            redis_metrics.incr("connected_devices")
+            redis_metrics.incr("connected_devices:{0}".format(date_stamp))
+            redis_metrics.incr("connections:{0}".format(date_stamp))
+            
+            self.device_sockets[device_id] = device_socket
+            log.msg("Registered new device: {0}. Number of connected devices: {1}".format(device_id, len(self.device_sockets)))
+        except:
+            log.err()
 
     def unregisterDevice(self, device_id):
         if device_id in self.device_sockets:
             socket = self.device_sockets[device_id]
-            log.msg("Unregistering device {0}".format(device_id))            
             
             del(self.device_sockets[device_id])
 
-	    log.msg("Unregistered device. Number of connected devices: {0}".format(len(self.device_sockets)))
+            #Metrics gathering
+            date_stamp = strftime("%Y-%m-%d-%H:00:00", gmtime())
+        
+            redis_metrics.decr("connected_devices")
+            redis_metrics.decr("connected_devices:{0}".format(date_stamp))
+            redis_metrics.incr("disconnections:{0}".format(date_stamp))
+            
+            log.msg("Unregistered device {0}. Number of connected devices: {1}".format(device_id, len(self.device_sockets)))
         else:
             log.msg("Unregistration for device {0} failed. Device has not been registered".format(device_id))
-
-    def registerDevice(self, device_id, device_socket):
-        log.msg("Registering device with device_id: {0}".format(device_id))
-        try:
-#            if device_id in self.device_sockets:
-                self.device_sockets[device_id] = device_socket
-                log.msg("New device registered. Number of connected devices: {0}".format(len(self.device_sockets)))
- #           else:
-  #              log.msg("Existing device attempted to register again. Device ID: {0}".format(device_id))
-        except:
-            log.err()
 
     def getResource(self):
         root = Resource()
         root.putChild("events", EventResource(self))
-        root.putChild("pair", PairingResource(self))
-        root.putChild("heartbeat", HeartbeatResource(self))
+        root.putChild("connect", ConnectResource(self))
         root.putChild("disconnect", DisconnectResource(self))
         return root
 
