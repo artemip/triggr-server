@@ -21,20 +21,26 @@ OPTIONS = {
     "http_port" : 8000
 }
 
-redis = redis.Redis(host='', db=2)
-redis_metrics = redis.Redis(host='', db=3)
+redis_metrics = redis.Redis(host='', db=0)
+redis = redis.Redis(host='', db=1)
 
 # OK message (no errors, no significant messages)
 def okMessageJSON():
-    return "{'status':'ok'}"
+    response = { 'status' : 'ok' }
+    return json.dumps(response)
 
 # Message to return then connected to new device
 def connectedMessageJSON(paired_device_id):
-    return "{'status':'ok', 'paired_device_id':'{0}'}".format(paired_device_id)
+    response = { 'status' : 'ok', 'paired_device_id' : paired_device_id }
+    return json.dumps(response)
 
 # Error occured; Send the message (reason) back to the client
 def errorMessageJSON(message):
-    return "{'status':'error', 'message':'{0}'}".format(message)
+    response = { 'status' : 'error', 'message' : message }
+    return json.dumps(response)
+
+def get_date_stamp():
+    return strftime("%Y-%m-%d-%H:00:00", gmtime())
 
 # Listen to and communicate with incoming socket connections
 class SocketListenerProtocol(basic.LineReceiver):
@@ -79,8 +85,10 @@ class SocketListenerProtocol(basic.LineReceiver):
                 log.msg("Registering pairing key {0} from device {1}.".format(message, self.device_id))
             else:
                 raise Exception
+                
         except:
             # Broken or malicious client. Close the connection
+            log.err()
             log.msg("Invalid message {0} from socket {1}".format(line, self))
             self.transport.abortConnection()
 
@@ -157,56 +165,62 @@ class TriggrService(service.Service):
     def getListeningDevices(self):
         return self.device_sockets
 
-    def sendEvent(self, device_id, event):
-        event = json.load(event)
+    def sendEvent(self, device_id, event_json):
+        event = json.loads(event_json)
         event_type = event["type"]
         
-        log.msg("Forwarding event {evt} to device {dev}".format(evt=event, dev=device_id))
-        
-        #Metrics gathering
-        date_stamp = strftime("%Y-%m-%d-%H:00:00", gmtime())
+        log.msg("Forwarding event {evt} to device {dev}".format(evt=event_json, dev=device_id))
     
         redis_metrics.incr("events_total")
         redis_metrics.incr("{0}".format(event_type))
-        redis_metrics.incr("{0}:{1}".format(event_type, date_stamp))
+        redis_metrics.incr("{0}:{1}".format(event_type, get_date_stamp()))
 
         try:
             socket = self.device_sockets[device_id]
-            socket.transport.write(event + '\r\n')
+            socket.transport.write(event_json + '\r\n')
             socket.sent_message = True
             return True
+        except KeyError:
+            log.msg("Invalid device_id %s" % device_id)
         except:
             log.err()
+        finally:
             return False
 
     def registerDevice(self, device_id, device_socket):
-        try:
-            #Metrics gathering
-            date_stamp = strftime("%Y-%m-%d-%H:00:00", gmtime())
+        # This device is already registered
+        if device_id in self.device_sockets:
+            # Don't log the connection; Overwrite the old one and return
+            redis_metrics.incr("connected_devices_duplicates")
+            redis_metrics.incr("connected_devices_duplicates:{0}".format(get_date_stamp()))
+            self.device_sockets[device_id] = device_socket
+            return
         
-            redis_metrics.incr("connected_devices")
-            redis_metrics.incr("connected_devices:{0}".format(date_stamp))
-            redis_metrics.incr("connections:{0}".format(date_stamp))
+        try:
+            num_connected_devices = len(self.device_sockets)
+            
+            redis_metrics.set("connected_devices", num_connected_devices)
+            redis_metrics.set("connected_devices:{0}".format(get_date_stamp()), num_connected_devices)
+            redis_metrics.incr("connections")
+            redis_metrics.incr("connections:{0}".format(get_date_stamp()))
             
             self.device_sockets[device_id] = device_socket
-            log.msg("Registered new device: {0}. Number of connected devices: {1}".format(device_id, len(self.device_sockets)))
+            log.msg("Registered new device: {0}. Number of connected devices: {1}".format(device_id, num_connected_devices))
         except:
             log.err()
 
     def unregisterDevice(self, device_id):
         if device_id in self.device_sockets:
-            socket = self.device_sockets[device_id]
-            
             del(self.device_sockets[device_id])
 
-            #Metrics gathering
-            date_stamp = strftime("%Y-%m-%d-%H:00:00", gmtime())
-        
-            redis_metrics.decr("connected_devices")
-            redis_metrics.decr("connected_devices:{0}".format(date_stamp))
-            redis_metrics.incr("disconnections:{0}".format(date_stamp))
+            num_connected_devices = len(self.device_sockets)
+
+            redis_metrics.set("connected_devices", num_connected_devices)
+            redis_metrics.set("connected_devices:{0}".format(get_date_stamp()), num_connected_devices)
+            redis_metrics.incr("disconnections")
+            redis_metrics.incr("disconnections:{0}".format(get_date_stamp()))
             
-            log.msg("Unregistered device {0}. Number of connected devices: {1}".format(device_id, len(self.device_sockets)))
+            log.msg("Unregistered device {0}. Number of connected devices: {1}".format(device_id, num_connected_devices))
         else:
             log.msg("Unregistration for device {0} failed. Device has not been registered".format(device_id))
 
