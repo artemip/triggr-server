@@ -31,12 +31,12 @@ def okMessageJSON():
 
 # Message to return then connected to new device
 def connectedMessageJSON(paired_device_id):
-    response = { 'status' : 'ok', 'paired_device_id' : paired_device_id }
+    response = { 'status' : 'ok', 'message' : '', 'paired_device_id' : paired_device_id }
     return json.dumps(response)
 
 # Error occured; Send the message (reason) back to the client
 def errorMessageJSON(message):
-    response = { 'status' : 'error', 'message' : message }
+    response = { 'status' : 'error', 'message' : message, 'paired_device_id' : ''}
     return json.dumps(response)
 
 def get_date_stamp():
@@ -126,6 +126,8 @@ class ConnectResource(resource.Resource):
         redis_key = 'pairing_device:' + pairing_key
         pairing_device_id = redis.get(redis_key)
 
+        log.msg(event)
+
         if pairing_device_id is None:
             log.msg('No matching device found for pairing key: ' + pairing_key)
             return errorMessageJSON("Invalid pairing key")
@@ -182,9 +184,9 @@ class TriggrService(service.Service):
             return True
         except KeyError:
             log.msg("Invalid device_id %s" % device_id)
+            return False
         except:
             log.err()
-        finally:
             return False
 
     def registerDevice(self, device_id, device_socket):
