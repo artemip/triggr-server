@@ -52,14 +52,14 @@ class SocketListenerProtocol(basic.LineReceiver):
 
     def timeout_connection(self):
         if self.sent_message == False:
-            log.msg("Timing out old connection: {0}; Reason: {1}s timeout passed".format(self.device_id, self.socket_timeout))
+            log.msg("WARN: Timing out old connection: {0}; Reason: {1}s timeout passed".format(self.device_id, self.socket_timeout))
             self.transport.abortConnection()
         else:
             self.sent_message = False
             
     # Log new connection being made
     def connectionMade(self):
-        log.msg("Received socket connection: %s" % self)
+        log.msg("INFO: Received socket connection: %s" % self)
         self.timeout_task = task.LoopingCall(self.timeout_connection)
         self.timeout_task.start(self.socket_timeout)
         self.device_id = None
@@ -82,19 +82,19 @@ class SocketListenerProtocol(basic.LineReceiver):
                 redis_key = 'pairing_device:' + message
                 redis.set(redis_key, self.device_id)
                 redis.expire(redis_key, 86400) #1-day expiry
-                log.msg("Registering pairing key {0} from device {1}.".format(message, self.device_id))
+                log.msg("INFO: Registering pairing key {0} from device {1}.".format(message, self.device_id))
             else:
                 raise Exception
                 
         except:
             # Broken or malicious client. Close the connection
             log.err()
-            log.msg("Invalid message {0} from socket {1}".format(line, self))
+            log.msg("ERROR: Invalid message {0} from socket {1}".format(line, self))
             self.transport.abortConnection()
 
     # When the connection is lost, unregister the device and forget the socket
     def connectionLost(self, reason):
-        log.msg("Lost connection with device {0}. Reason: {1}".format(self.device_id, reason))
+        log.msg("INFO: Lost connection with device {0}. Reason: {1}".format(self.device_id, reason))
         self.factory.unregisterDevice(self.device_id)
         self.timeout_task.stop()
 
@@ -126,13 +126,13 @@ class ConnectResource(resource.Resource):
         redis_key = 'pairing_device:' + pairing_key
         pairing_device_id = redis.get(redis_key)
 
-        log.msg(event)
+        log.msg("INFO: " + event)
 
         if pairing_device_id is None:
-            log.msg('No matching device found for pairing key: ' + pairing_key)
+            log.msg('INFO: No matching device found for pairing key: ' + pairing_key)
             return errorMessageJSON("Invalid pairing key")
             
-        log.msg('Connected devices {0} and {1} using key {2}.'.format(device_id, pairing_device_id, pairing_key))
+        log.msg('INFO: Connected devices {0} and {1} using key {2}.'.format(device_id, pairing_device_id, pairing_key))
         redis.delete(redis_key)
         if self.service.sendEvent(pairing_device_id, event):
             return connectedMessageJSON(pairing_device_id)
@@ -149,11 +149,11 @@ class DisconnectResource(resource.Resource):
         paired_device_id = request.args["paired_device_id"][0]
         event = request.args["event"][0]
 
-        log.msg("Received disconnect message from " + device_id + " intended for recipient " + paired_device_id)
+        log.msg("INFO: Received disconnect message from " + device_id + " intended for recipient " + paired_device_id)
 
         listening_devices = self.service.getListeningDevices()
         if paired_device_id != "" and paired_device_id in listening_devices.keys() and listening_devices[paired_device_id] != None:
-            log.msg("Device is connected. Forwarding disconnect request to " + paired_device_id)
+            log.msg("INFO: Device is connected. Forwarding disconnect request to " + paired_device_id)
             
             if self.service.sendEvent(paired_device_id, event):
                 return okMessageJSON()
@@ -171,7 +171,7 @@ class TriggrService(service.Service):
         event = json.loads(event_json)
         event_type = event["type"]
         
-        log.msg("Forwarding event {evt} to device {dev}".format(evt=event_json, dev=device_id))
+        log.msg("INFO: Forwarding event {evt} to device {dev}".format(evt=event_json, dev=device_id))
     
         redis_metrics.incr("events_total")
         redis_metrics.incr("{0}".format(event_type))
@@ -183,7 +183,7 @@ class TriggrService(service.Service):
             socket.sent_message = True
             return True
         except KeyError:
-            log.msg("Invalid device_id %s" % device_id)
+            log.msg("WARN: Invalid device_id %s" % device_id)
             return False
         except:
             log.err()
@@ -207,7 +207,7 @@ class TriggrService(service.Service):
             redis_metrics.incr("connections:{0}".format(get_date_stamp()))
             
             self.device_sockets[device_id] = device_socket
-            log.msg("Registered new device: {0}. Number of connected devices: {1}".format(device_id, num_connected_devices))
+            log.msg("INFO: Registered new device: {0}. Number of connected devices: {1}".format(device_id, num_connected_devices))
         except:
             log.err()
 
@@ -222,9 +222,9 @@ class TriggrService(service.Service):
             redis_metrics.incr("disconnections")
             redis_metrics.incr("disconnections:{0}".format(get_date_stamp()))
             
-            log.msg("Unregistered device {0}. Number of connected devices: {1}".format(device_id, num_connected_devices))
+            log.msg("INFO: Unregistered device {0}. Number of connected devices: {1}".format(device_id, num_connected_devices))
         else:
-            log.msg("Unregistration for device {0} failed. Device has not been registered".format(device_id))
+            log.msg("WARN: Unregistration for device {0} failed. Device has not been registered".format(device_id))
 
     def getResource(self):
         root = Resource()
