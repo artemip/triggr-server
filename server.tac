@@ -13,6 +13,7 @@ from time import gmtime, strftime
 import cgi
 import ast
 import json
+from mixpanel import Mixpanel
 import redis
 
 OPTIONS = {
@@ -23,6 +24,7 @@ OPTIONS = {
 
 redis_metrics = redis.Redis(host='', db=0)
 redis = redis.Redis(host='', db=1)
+mixpanel_metrics = Mixpanel("237d55f70cdb76d69382c02bc95c8b16")
 
 # OK message (no errors, no significant messages)
 def okMessageJSON():
@@ -66,9 +68,13 @@ class SocketListenerProtocol(basic.LineReceiver):
 
     # Receive a message from the socket
     def lineReceived(self, line):
-        parsed_json = json.loads(line)
-
         try:
+            parsed_json = json.loads(line)
+        except ValueError:
+            log.err("Invalid message from socket {0}: '{1}'".format(self, line))
+            return
+        
+        try:            
             # Get message type and message data
             message_type = parsed_json["message_type"]
             message = parsed_json["message"]
@@ -83,6 +89,8 @@ class SocketListenerProtocol(basic.LineReceiver):
                 redis.set(redis_key, self.device_id)
                 redis.expire(redis_key, 86400) #1-day expiry
                 log.msg("INFO: Registering pairing key {0} from device {1}.".format(message, self.device_id))
+            elif message_type == 'heartbeat':
+                return
             else:
                 raise Exception
                 
@@ -130,6 +138,9 @@ class ConnectResource(resource.Resource):
 
         if pairing_device_id is None:
             log.msg('INFO: No matching device found for pairing key: ' + pairing_key)
+            
+            mixpanel_metrics.track(device_id, "invalid_key", { 'key' : pairing_key })
+            
             return errorMessageJSON("Invalid pairing key")
             
         log.msg('INFO: Connected devices {0} and {1} using key {2}.'.format(device_id, pairing_device_id, pairing_key))
@@ -168,15 +179,24 @@ class TriggrService(service.Service):
         return self.device_sockets
 
     def sendEvent(self, device_id, event_json):
-        event = json.loads(event_json)
-        event_type = event["type"]
+        try:
+            event = json.loads(event_json)
+            event_type = event["type"]
+        except:
+            log.err("Invalid message '{0}' sent to device {1}".format(event_json, device_id))
+            return False
         
         log.msg("INFO: Forwarding event {evt} to device {dev}".format(evt=event_json, dev=device_id))
-    
+
+        # Redis metrics
         redis_metrics.incr("events_total")
         redis_metrics.incr("{0}".format(event_type))
         redis_metrics.incr("{0}:{1}".format(event_type, get_date_stamp()))
 
+        # Mixpanel metrics
+        mixpanel_metrics.track(device_id, "events_total")
+        mixpanel_metrics.track(device_id, "{0}".format(event_type))
+        
         try:
             socket = self.device_sockets[device_id]
             socket.transport.write(event_json + '\r\n')
@@ -195,18 +215,24 @@ class TriggrService(service.Service):
             # Don't log the connection; Overwrite the old one and return
             redis_metrics.incr("connected_devices_duplicates")
             redis_metrics.incr("connected_devices_duplicates:{0}".format(get_date_stamp()))
+            
+            mixpanel_metrics.track(device_id, "connected_devices_duplicates")
+            
             self.device_sockets[device_id] = device_socket
             return
         
         try:
+            self.device_sockets[device_id] = device_socket
+            
             num_connected_devices = len(self.device_sockets)
             
             redis_metrics.set("connected_devices", num_connected_devices)
             redis_metrics.set("connected_devices:{0}".format(get_date_stamp()), num_connected_devices)
             redis_metrics.incr("connections")
             redis_metrics.incr("connections:{0}".format(get_date_stamp()))
+
+            mixpanel_metrics.track(device_id, "connections")
             
-            self.device_sockets[device_id] = device_socket
             log.msg("INFO: Registered new device: {0}. Number of connected devices: {1}".format(device_id, num_connected_devices))
         except:
             log.err()
@@ -221,6 +247,8 @@ class TriggrService(service.Service):
             redis_metrics.set("connected_devices:{0}".format(get_date_stamp()), num_connected_devices)
             redis_metrics.incr("disconnections")
             redis_metrics.incr("disconnections:{0}".format(get_date_stamp()))
+
+            mixpanel_metrics.track(device_id, "disconnections")
             
             log.msg("INFO: Unregistered device {0}. Number of connected devices: {1}".format(device_id, num_connected_devices))
         else:
